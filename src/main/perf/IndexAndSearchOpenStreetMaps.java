@@ -50,6 +50,7 @@ import org.apache.lucene.document.LatLonPoint;
 //import org.apache.lucene.geo.EarthDebugger;
 import org.apache.lucene.geo.GeoUtils;
 import org.apache.lucene.geo.Polygon;
+import org.apache.lucene.geo.Polygon2D;
 import org.apache.lucene.geo.Rectangle;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
@@ -67,6 +68,11 @@ import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SerialMergeScheduler;
 import org.apache.lucene.index.SortedNumericDocValues;
 import org.apache.lucene.index.TieredMergePolicy;
+import org.apache.lucene.facet.Facets;
+import org.apache.lucene.facet.FacetResult;
+import org.apache.lucene.facet.FacetsCollector;
+import org.apache.lucene.facet.FacetsCollector.MatchingDocs;
+import org.apache.lucene.facet.range.PolygonFacets;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldDoc;
@@ -110,8 +116,8 @@ import static org.apache.lucene.geo.GeoEncodingUtils.encodeLongitude;
 
 // javac -cp build/core/classes/java:build/sandbox/classes/java /l/util/src/main/perf/IndexAndSearchOpenStreetMaps.java /l/util/src/main/perf/RandomQuery.java; java -cp /l/util/src/main:build/core/classes/java:build/sandbox/classes/java perf.IndexAndSearchOpenStreetMaps
 
-// rmuir@beast:~/workspace/util$ javac -cp /home/rmuir/workspace/lucene-solr/lucene/build/core/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/sandbox/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial3d/classes/java src/main/perf/IndexAndSearchOpenStreetMaps.java src/main/perf/RandomQuery.java
-// rmuir@beast:~/workspace/util$ java -cp /home/rmuir/workspace/lucene-solr/lucene/build/core/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/sandbox/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial3d/classes/java:src/main perf.IndexAndSearchOpenStreetMaps
+// rmuir@beast:~/workspace/util$ javac -cp /home/rmuir/workspace/lucene-solr/lucene/build/core/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/sandbox/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial3d/classes/java::/home/rmuir/workspace/lucene-solr/lucene/build/facet/classes/java src/main/perf/IndexAndSearchOpenStreetMaps.java src/main/perf/RandomQuery.java
+// rmuir@beast:~/workspace/util$ java -cp /home/rmuir/workspace/lucene-solr/lucene/build/core/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/sandbox/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/spatial3d/classes/java:/home/rmuir/workspace/lucene-solr/lucene/build/facet/classes/java:src/main perf.IndexAndSearchOpenStreetMaps
 
 // convert geojson to poly file using src/python/geoJSONToJava.py
 //
@@ -133,8 +139,8 @@ public class IndexAndSearchOpenStreetMaps {
         DATA_LOCATION = "/lucenedata/open-street-maps/";
         break;
       case "rmuir":
-        INDEX_LOCATION = "/data/bkdtest";
-        DATA_LOCATION = "/data/";
+        INDEX_LOCATION = "/data/data/bkdtest";
+        DATA_LOCATION = "/data/data/";
         break;
       case "kawright":
         INDEX_LOCATION = "c:\\data\\bkdtest";
@@ -156,13 +162,13 @@ public class IndexAndSearchOpenStreetMaps {
   static boolean SMALL = true;
   static int NUM_PARTS;
 
-  private static String getName(int part, boolean doDistanceSort) {
+  private static String getName(int part, boolean doDocValues) {
     String name = INDEX_LOCATION + part;
     if (useGeo3D || useGeo3DLarge) {
       name += ".geo3d";
     } else if (useLatLonPoint) {
       name += ".points";
-      if (doDistanceSort) {
+      if (doDocValues) {
         name += ".withdvs";
       }
     } else if (useDocValues) {
@@ -301,6 +307,7 @@ public class IndexAndSearchOpenStreetMaps {
       result.add(polys.toArray(new Polygon[polys.size()]));
     }
     System.out.println("Total vertex count: " + totalVertexCount);
+    System.out.println("Total poly count: " + result.size());
 
     /*
     try (PrintWriter out = new PrintWriter("/x/tmp/londonpoly.html")) {
@@ -394,7 +401,7 @@ public class IndexAndSearchOpenStreetMaps {
   }
 */
 
-  private static void createIndex(boolean fast, boolean doForceMerge, boolean doDistanceSort) throws IOException, InterruptedException {
+  private static void createIndex(boolean fast, boolean doForceMerge, boolean doDocValues) throws IOException, InterruptedException {
 
     CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
         .onMalformedInput(CodingErrorAction.REPORT)
@@ -422,7 +429,7 @@ public class IndexAndSearchOpenStreetMaps {
     AtomicLong totalCount = new AtomicLong();
 
     for(int part=0;part<NUM_PARTS;part++) {
-      Directory dir = FSDirectory.open(Paths.get(getName(part, doDistanceSort)));
+      Directory dir = FSDirectory.open(Paths.get(getName(part, doDocValues)));
 
       IndexWriterConfig iwc = new IndexWriterConfig(null);
       iwc.setCodec(getCodec(fast));
@@ -480,7 +487,7 @@ public class IndexAndSearchOpenStreetMaps {
                       doc.add(new LatLonDocValuesField("point", lat, lon));
                     } else {
                       doc.add(new LatLonPoint("point", lat, lon));
-                      if (doDistanceSort) {
+                      if (doDocValues) {
                         doc.add(new LatLonDocValuesField("point", lat, lon));
                       }
                     }
@@ -572,6 +579,57 @@ public class IndexAndSearchOpenStreetMaps {
     return newPolies;
   }
 
+  private static double[] runFacets(IndexSearcher[] searchers, Query query, PolygonFacets tree) throws IOException {
+    double bestQPS = Double.NEGATIVE_INFINITY;
+
+    // million hits per second:
+    double bestMHPS = Double.NEGATIVE_INFINITY;
+
+    // nocommit
+    Rectangle gon = tree.getBoundingBox();
+    Query q = LatLonPoint.newBoxQuery("point", gon.minLat, gon.maxLat, gon.minLon, gon.maxLon);
+
+    for(int iter=0;iter<ITERS;iter++) {
+      long tStart = System.nanoTime();
+      long totHits = 0;
+      int count = 0;
+      int hitCount = 0;
+      for(IndexSearcher s : searchers) {
+        FacetsCollector fc = new FacetsCollector();
+        //s.search(new MatchAllDocsQuery(), fc);
+        s.search(q, fc);
+        for (MatchingDocs m : fc.getMatchingDocs()) {
+          hitCount += m.totalHits;
+        }
+        Facets facets = tree.create("point", fc);
+        FacetResult result = facets.getTopChildren(10, "point");
+        System.out.println(result.toString());
+      }
+
+      if (iter == 0) {
+        //System.out.println("QUERY " + count + ": " + q + " hits=" + hitCount);
+        count++;
+      }
+      totHits += hitCount;
+
+      long tEnd = System.nanoTime();
+      double elapsedSec = (tEnd-tStart)/1000000000.0;
+      double qps = 1 / elapsedSec;
+      double mhps = (totHits/1000000.0) / elapsedSec;
+      System.out.println(String.format(Locale.ROOT,
+                                       "ITER %d: %.2f M hits/sec, %.2f QPS (%.2f sec for %d queries), totHits=%d",
+                                       iter, mhps, qps, elapsedSec, 1, totHits));
+      if (qps > bestQPS) {
+        System.out.println("  ***");
+        bestQPS = qps;
+        bestMHPS = mhps;
+      }
+    }
+
+    return new double[] {bestQPS, bestMHPS};
+  }
+
+
   private static double[] runQueries(IndexSearcher[] searchers, List<Query> queries) throws IOException {
     double bestQPS = Double.NEGATIVE_INFINITY;
 
@@ -611,12 +669,12 @@ public class IndexAndSearchOpenStreetMaps {
     return new double[] {bestQPS, bestMHPS};
   }
 
-  private static void queryIndex(String queryClass, int gons, int nearestTopN, String polyFile, boolean preBuildQueries, Double filterPercent, boolean doDistanceSort) throws IOException {
+  private static void queryIndex(String queryClass, int gons, int nearestTopN, String polyFile, boolean preBuildQueries, Double filterPercent, boolean doDistanceSort, boolean doFacet) throws IOException {
     IndexSearcher[] searchers = new IndexSearcher[NUM_PARTS];
     Directory[] dirs = new Directory[NUM_PARTS];
     long sizeOnDisk = 0;
     for(int part=0;part<NUM_PARTS;part++) {
-      dirs[part] = FSDirectory.open(Paths.get(getName(part, doDistanceSort)));
+      dirs[part] = FSDirectory.open(Paths.get(getName(part, doDistanceSort || doFacet)));
       searchers[part] = new IndexSearcher(DirectoryReader.open(dirs[part]));
       searchers[part].setQueryCache(null);
       for(String name : dirs[part].listAll()) {
@@ -648,7 +706,21 @@ public class IndexAndSearchOpenStreetMaps {
     // million hits per second:
     double bestMHPS = Double.NEGATIVE_INFINITY;
 
-    if (queryClass.equals("polyFile")) {
+    if (queryClass.equals("polyFacet")) {
+      List<Polygon[]> polygons = readPolygons(polyFile);
+      PolygonFacets.Builder builder = new PolygonFacets.Builder();
+      int boroughCount = 0;
+      for (Polygon[] polygon : polygons) {
+        builder.add("borough" + boroughCount, polygon);
+        boroughCount++;
+      }
+      PolygonFacets tree = builder.build();
+      Rectangle gon = tree.getBoundingBox();
+      Query query = LatLonPoint.newBoxQuery("point", gon.minLat, gon.maxLat, gon.minLon, gon.maxLon);
+      double[] result = runFacets(searchers, query, tree);
+      bestQPS = result[0];
+      bestMHPS = result[1];
+    } else if (queryClass.equals("polyFile")) {
 
       // TODO: only load the double[][] here, so that we includ the cost of making Polygon and Query in each iteration!!
       List<Polygon[]> polygons = readPolygons(polyFile);
@@ -1101,7 +1173,7 @@ public class IndexAndSearchOpenStreetMaps {
 
   private static String setQueryClass(String currentValue, String newValue) {
     if (currentValue != null) {
-      throw new IllegalArgumentException("specify only one of -poly, -polyFile, -distance, -box");
+      throw new IllegalArgumentException("specify only one of -poly, -polyFile, -distance, -box; -facet");
     }
     return newValue;
   }
@@ -1118,6 +1190,7 @@ public class IndexAndSearchOpenStreetMaps {
     boolean preBuildQueries = false;
     boolean forceMerge = false;
     boolean doDistanceSort = false;
+    boolean doFacet = false;
     for(int i=0;i<args.length;i++) {
       String arg = args[i];
       if (arg.equals("-reindex")) {
@@ -1143,6 +1216,11 @@ public class IndexAndSearchOpenStreetMaps {
         doDistanceSort = true;
       } else if (arg.equals("-preBuildQueries")) {
         preBuildQueries = true;
+      } else if (arg.equals("-facet")) {
+        // enable dv
+        doFacet = true;
+        queryClass = setQueryClass(queryClass, "polyFacet");
+        polyFile = DATA_LOCATION + "/london.boroughs.poly.txt.gz";
       } else if (arg.equals("-polyMedium")) {
         // London boroughs:
         queryClass = setQueryClass(queryClass, "polyFile");
@@ -1238,8 +1316,8 @@ public class IndexAndSearchOpenStreetMaps {
     System.out.println("Index path: " + getName(0, doDistanceSort));
 
     if (reindex) {
-      createIndex(fastReindex, forceMerge, doDistanceSort);
+      createIndex(fastReindex, forceMerge, doDistanceSort || doFacet);
     }
-    queryIndex(queryClass, gons, nearestTopN, polyFile, preBuildQueries, filterPercent, doDistanceSort);
+    queryIndex(queryClass, gons, nearestTopN, polyFile, preBuildQueries, filterPercent, doDistanceSort, doFacet);
   }
 }
